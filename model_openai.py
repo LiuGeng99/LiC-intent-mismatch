@@ -1,0 +1,152 @@
+from openai import OpenAI, AzureOpenAI
+import os, time, json, re
+
+def format_messages(messages, variables={}):
+    last_user_msg = [msg for msg in messages if msg["role"] == "user"][-1]
+
+    for k, v in variables.items():
+        key_string = f"[[{k}]]"
+        if key_string not in last_user_msg["content"]:
+            print(f"[prompt] Key {k} not found in prompt; effectively ignored")
+        assert type(v) == str, f"[prompt] Variable {k} is not a string"
+        last_user_msg["content"] = last_user_msg["content"].replace(key_string, v)
+
+    keys_still_in_prompt = re.findall(r"\[\[([^\]]+)\]\]", last_user_msg["content"])
+    if len(keys_still_in_prompt) > 0:
+        print(f"[prompt] The following keys were not replaced: {keys_still_in_prompt}")
+
+    return messages
+
+class OpenAI_Model:
+    def __init__(self):
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("Set OPENAI_API_KEY before calling the model. OPENAI_BASE_URL is optional.")
+        kwargs = {"api_key": api_key}
+        base_url = os.environ.get("OPENAI_BASE_URL")
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = OpenAI(**kwargs)
+
+    def cost_calculator(self, model, usage, is_batch_model=False):
+        is_finetuned, base_model = False, model
+        if model.startswith("ft:gpt"):
+            is_finetuned = True
+            base_model = model.split(":")[1]
+
+        prompt_tokens = usage['prompt_tokens']
+        if 'prompt_tokens_details' in usage:
+            if 'cached_tokens' in usage['prompt_tokens_details']:
+                prompt_tokens_cached = usage['prompt_tokens_details']['cached_tokens']
+            else:
+                prompt_tokens_cached = 0
+        else:
+            prompt_tokens_cached = 0
+        prompt_tokens_non_cached = prompt_tokens - prompt_tokens_cached
+
+        completion_tokens = usage['completion_tokens']
+        if base_model.startswith("gpt-4o-mini"):
+            if is_finetuned:
+                inp_token_cost, out_token_cost = 0.0003, 0.00015
+            else:
+                inp_token_cost, out_token_cost = 0.00015, 0.0006
+        elif base_model.startswith("gpt-4o"):
+            if is_finetuned:
+                inp_token_cost, out_token_cost = 0.00375, 0.015
+            else:
+                inp_token_cost, out_token_cost = 0.0025, 0.01
+        elif base_model.startswith("gpt-5.1"):
+            inp_token_cost, out_token_cost = 0.00125, 0.01
+        elif base_model.startswith("gpt-5.2"):
+            inp_token_cost, out_token_cost = 0.00175, 0.014
+        elif base_model.startswith("gpt-3.5-turbo"):
+            inp_token_cost, out_token_cost = 0.0005, 0.0015
+        elif base_model.startswith("o1-mini"):
+            inp_token_cost, out_token_cost = 0.003, 0.012
+        elif base_model.startswith("gpt-4.5-preview"):
+            inp_token_cost, out_token_cost = 0.075, 0.150
+        elif base_model.startswith("o1-preview") or base_model == "o1":
+            inp_token_cost, out_token_cost = 0.015, 0.06
+        elif base_model.startswith("deepseek-r1") or base_model == "o1":
+            inp_token_cost, out_token_cost = 0.015, 0.06
+        elif base_model.startswith("deepseek-reasoner") or base_model == "o1":
+            inp_token_cost, out_token_cost = 0.015, 0.06
+        elif base_model.startswith("deepseek-v3.2") or base_model == "o1":
+            inp_token_cost, out_token_cost = 0.00028, 0.00042
+        else:
+            raise Exception(f"Model {model} pricing unknown, please add")
+
+        cache_discount = 0.5
+        batch_discount = 0.5
+        total_usd = ((prompt_tokens_non_cached + prompt_tokens_cached * cache_discount) / 1000) * inp_token_cost + (completion_tokens / 1000) * out_token_cost
+        if is_batch_model:
+            total_usd *= batch_discount
+
+        return total_usd
+
+    def generate(self, messages, model="gpt-4o-mini", timeout=600, max_retries=3, temperature=1.0, is_json=False, return_metadata=False, max_tokens=None, variables={}):
+        kwargs = {}
+        if is_json:
+            kwargs["response_format"] = { "type": "json_object" }
+        N = 0
+
+        messages = format_messages(messages, variables)
+
+        if model.startswith("o1") and len(messages) > 1 and messages[0]["role"] == "system" and messages[1]["role"] == "user":
+            system_message = messages[0]["content"]
+            messages[1]["content"] = f"System Message: {system_message}\n{messages[1]['content']}"
+            messages = messages[1:]
+
+        while True:
+            try:
+                response = self.client.chat.completions.create(model=model, messages=messages, timeout=timeout, max_completion_tokens=max_tokens, temperature=temperature, **kwargs)
+                break
+            except:
+                N += 1
+                if N >= max_retries:
+                    raise Exception("Failed to get response from OpenAI")
+                else:
+                    time.sleep(4)
+
+        response = response.to_dict()
+        usage = response['usage']
+        response_text = response["choices"][0]["message"]["content"]
+        total_usd = self.cost_calculator(model, usage)
+        prompt_tokens_cached = 0
+        if 'prompt_tokens_details' in usage:
+            if 'cached_tokens' in usage['prompt_tokens_details']:
+                prompt_tokens_cached = usage['prompt_tokens_details']['cached_tokens']
+
+        if not return_metadata:
+            return response_text
+        return {"message": response_text, "total_tokens": usage['total_tokens'], "prompt_tokens": usage['prompt_tokens'], "prompt_tokens_cached": prompt_tokens_cached, "completion_tokens": usage['completion_tokens'], "total_usd": total_usd}
+
+    def generate_json(self, messages, model="gpt-4o-mini", **kwargs):
+        response = self.generate(messages, model, is_json=True, **kwargs)
+        response["message"] = json.loads(response["message"])
+        return response
+
+_model = None
+
+def _client():
+    global _model
+    if _model is None:
+        _model = OpenAI_Model()
+    return _model
+
+def generate(*args, **kwargs):
+    return _client().generate(*args, **kwargs)
+
+def generate_json(*args, **kwargs):
+    return _client().generate_json(*args, **kwargs)
+
+if __name__ == "__main__":
+    messages = [
+        {"role": "user", "content": "Humor is a way to make people laugh. Tell me a joke about UC Berkeley."},
+        {"role": "assistant", "content": '{"joke": '}
+    ]
+
+    model = "gpt-4o"
+    response = generate(messages, model=model, return_metadata=True)
+    
+    print(response)

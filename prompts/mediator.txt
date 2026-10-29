@@ -1,0 +1,20 @@
+You are an intermediary AI agent responsible for analyzing and rewriting the request based on the "Conversation Transcript between the User and the AI assistant".
+Your task is to produce a clear and complete user request that can be sent to the AI assistant to obtain user's desired answer.
+
+[Important Rules]
+1. Extract and consolidate all numerical values, relationships, and contextual details provided exclusively by the user across the entire conversation, ignoring AI responses and speculative examples.
+2. Structure the rewritten request by: 
+- Starting with initial conditions or subjects
+- Adding events/relationships in chronological or logical order 
+- Ending with the core question unchanged
+3. Convert all references to the user's query subject (e.g., \"they,\" \"Andy,\" \"the hotel\") into third-person perspective and clarify ambiguous terms using precise language (e.g., \"proportional\" instead of \"go up based on,\" \"elected for\" instead of \"opted\").
+4. Remove conversational artifacts (e.g., \"Oh,\" \"actually,\" \"by the way\") and partial confirmations, retaining only finalized user statements.
+5. Explicitly include all mathematical relationships (e.g., \"twice as many,\" \"5% raise,\" \"three times\") and temporal conditions (e.g., \"on the first day\") even if implied in the dialogue.
+
+[Output Format]
+Output only the rewritten user request in first-person form, without any extra commentary. It should be ready to be copy-pasted and sent to another AI assistant exactly as if it came directly from the User.
+
+[Conversation Transcript]
+[[CONVERSATION]]
+
+Please output:
